@@ -1,5 +1,5 @@
-from job import JobList
-from command_job import SerialCommandJob
+from oguri.job import JobList
+from oguri.command_job import SerialCommandJob
 import argparse
 import os 
 
@@ -23,7 +23,7 @@ if args.reset:
 
 
 jobs = [
-    SerialCommandJob("asfdsjkfasdfhjasdfha bar.txt"), 
+    SerialCommandJob("asfdsjkfasdfhjasdfha bar.txt", launch_attempts=3, retry_delay=3.14), 
     SerialCommandJob("touch foo.txt"), 
     SerialCommandJob("touch bar.txt")
 ]
@@ -34,8 +34,10 @@ for job in jobs:
 job_list.flush()
 
 # Execute each job.
-for job in job_list:
-    if job.can_launch():
+while job_list.poll_states():
+    print(job_list) 
+    print()
+    for job in job_list.launchable_jobs():
         job.launch()
 
-job_list.poll_states() 
+print(job_list) 

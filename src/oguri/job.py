@@ -11,14 +11,14 @@ be resumed.
 
 
 from abc import ABC, abstractmethod
-from typing import Type, Callable, Any, Optional, Union, List, Dict
+from typing import Type, Callable, Any, Optional, Union, List, Dict, Type
 from enum import Enum
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import json
 import os 
 import re 
-from util import assert_file_exists
+from oguri.util import assert_file_exists, time_iso
 
 
 JSONPrimitive = Union[str, int, float, bool, None]
@@ -53,6 +53,8 @@ class Job(ABC):
     Properties: 
         start_time (Optional[datetime]): the time the job was started. If the 
             job was not yet started, equals None.
+        end_time (Optional[datetime]): the time the job was ended. If the job
+            has not yet ended, equals None.
         state (JobState): our execution state. 
         _cls_id (str): an identifier for our derived type.
     """
@@ -86,6 +88,15 @@ class Job(ABC):
         return {}  # It doesn't take parameters to recreate a base Job
 
     
+    @abstractmethod
+    def __str__(self) -> str: 
+        return f"Job({hash(self)})"
+
+
+    def __repr__(self) -> str:
+        return str(self)
+
+    
     def serialize(self) -> SerializedJob:
         """
         Serializes our state into a reduced, consistent form which can be 
@@ -105,8 +116,8 @@ class Job(ABC):
             hash(self),
             params=self.param_dict(), 
             state=self.state, 
-            start_time=self.start_time, 
-            end_time=self.end_time
+            start_time=time_iso(self.start_time), 
+            end_time=time_iso(self.end_time)
         )
 
     
@@ -116,9 +127,9 @@ class Job(ABC):
 
     
     @abstractmethod
-    def recreate(self, job: SerializedJob) -> "Job":
+    def restore(self, job: SerializedJob) -> "Job": 
         """
-        Recreates a job object from the serialized info of a previous run.
+        Restores our state to the state of the serialized job.
         """
         
         self.state = job.state 
@@ -137,6 +148,17 @@ class Job(ABC):
         
         self.start_time = parse_time(job.start_time)
         self.end_time = parse_time(job.end_time) 
+
+
+    @classmethod
+    def recreate(cls: Type["Job"], job: SerializedJob) -> "Job":
+        """
+        Recreates a job object from the serialized info of a previous run.
+        """
+        
+        self = object.__new__(cls)
+        self.restore(job) 
+        return self
 
     
     @abstractmethod
@@ -157,26 +179,6 @@ class Job(ABC):
         
         raise NotImplementedError() 
 
-    
-    @abstractmethod
-    def is_running(self) -> bool: 
-        """
-        Returns True if this job is currently running, or False otherwise. 
-        """
-        
-        raise NotImplementedError() 
-
-    
-    @abstractmethod
-    def exit(self) -> None:
-        """
-        Exits a job. If this job is not currently running, then does nothing.
-        Stalls until the job is actually exited; if this job cannot be exited, 
-        then raises an error. 
-        """
-        
-        raise NotImplementedError()
-
 
     @abstractmethod
     def poll_state(self) -> JobState:
@@ -186,16 +188,6 @@ class Job(ABC):
         """
 
         raise NotImplementedError()
-
-
-    @abstractmethod
-    def clear_state(self) -> None:
-        """
-        Clears our internal state, if we maintain any kind of per-job internal
-        state.
-        """
-
-        raise NotImplementedError() 
 
 
 """
@@ -308,7 +300,7 @@ class JobList:
                 )
 
             cls = _JOB_REGISTRY[job.cls_id]
-            jobs.append(cls(**job.params)) 
+            jobs.append(cls.recreate(job)) 
         
         return jobs 
 
@@ -359,12 +351,67 @@ class JobList:
                 separators=(",", ":"))
 
 
-    def poll_states(self) -> None:
+    def launchable_jobs(self) -> List[Job]:
         """
-        Polls for the states of each Job (updating their "state" properties in 
-        the process) and updates/flushes our registry at the end.
+        Returns the list of incomplete jobs which can be launched.
         """
 
+        return [
+            job 
+            for job in self._jobs 
+            if job.can_launch() and job.state != JobState.COMPLETED
+        ]
+
+
+    def running_jobs(self) -> List[Job]:
+        """
+        Returns the list of jobs which are currently running.
+        """
+
+        return [
+            job
+            for job in self._jobs
+            if job.state == JobState.RUNNING
+        ]
+
+    
+    def poll_states(self) -> bool:
+        """
+        Polls for the states of each Job (updating their "state" properties in 
+        the process) and updates/flushes our registry at the end. If there are 
+        jobs which can still launch, then return True.
+        """
+        
         for job in self._jobs:
             job.poll_state() 
-        self.flush() 
+                
+        self.flush()
+
+        return len(self.launchable_jobs()) != 0
+     
+
+    def __str__(self) -> str: 
+        s = ""
+        running = 0
+        completed = 0
+        failed = 0
+        other = 0
+        for idx, job in enumerate(self._jobs, 1): 
+            s += f"{idx}.) {job}\n" 
+            if job.state == JobState.RUNNING: 
+                running += 1
+            elif job.state == JobState.COMPLETED:
+                completed += 1
+            elif job.state == JobState.FAILED: 
+                failed += 1 
+            else:
+                other += 1 
+        s += (
+            f"{running} running, {completed} completed, {failed} failed, "
+            f"{other} other."
+        )
+        return s
+
+
+    def __repr__(self) -> str:
+        return str(self) 
